@@ -53,7 +53,7 @@ if __name__ == "__main__":
     parser.add_argument("--skip_mdjsonl", action="store_true", help="Skip the conversion from markdown to JSONL.")
     parser.add_argument("--skip_embeddings", action="store_true", help="Skip the embedding process.")
     parser.add_argument("--skip_2d_embeddings", action="store_true", help="Skip the embedding process.")
-    parser.add_argument("--embedding_tgt", action="store_true", help="Use the 2D embeddings with text all together.")
+    parser.add_argument("--embedding_separate", action="store_true", help="Use the 2D embeddings with each description as a separate embedding.")
     args = parser.parse_args()
 
     skip_mdjsonl = args.skip_mdjsonl or args.skip_embeddings or args.skip_2d_embeddings
@@ -91,7 +91,7 @@ if __name__ == "__main__":
 
     # Downsample the embeddings to 3 dimensions
     if not skip_2d_embeddings:
-        if args.embedding_tgt:
+        if not args.embedding_separate:
             embed_matrix = np.array([idea["embedding_tgt"] for idea in ideas_with_embeddings])
             print("Shape of embed_matrix:", embed_matrix.shape)
         else:
@@ -157,12 +157,12 @@ if __name__ == "__main__":
     sm   = ScalarMappable(cmap=plt.cm.viridis, norm=norm)
     sm.set_array([])                          # no data needed
     cbar = fig.colorbar(sm, ax=ax, fraction=0.035, pad=0.08, ticks=[])
-    cbar.set_label("recency")
+    cbar.set_label("recency", fontsize=22)
 
     def animate(frame):
         ax.clear()
         ax.grid()
-        ax.set_title("3D Embeddings of Ideas")
+        ax.set_title("3D Embeddings of Ideas", fontsize=30)
         ax.set_xlabel("X")
         ax.set_ylabel("Y")
         ax.set_zlabel("Z")
