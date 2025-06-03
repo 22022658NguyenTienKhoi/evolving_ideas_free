@@ -1,209 +1,231 @@
 import argparse
 import copy
 import json
-from openai import OpenAI
-import numpy as np
-from sklearn.decomposition import PCA
-import matplotlib.pyplot as plt
 import os
+
 import matplotlib.animation as animation
-import plotly.express as px
+import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
+import plotly.express as px
 from matplotlib.cm import ScalarMappable
 from matplotlib.colors import Normalize
-
-
+from openai import OpenAI
+from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
 
 client = OpenAI()
 
 def ideas_md_to_jsonl():
-    # load data from ideas.md
-    with open("ideas.md", "r") as file:
-        ideas_text = file.read()
+    """Convert ideas.md into ideas.jsonl with one idea per line."""
+    with open("ideas.md", "r", encoding="utf-8") as fh:
+        ideas_text = fh.read()
 
-    # transform ideas into a list of dictionaries
     ideas_list = []
-    for idea_text in ideas_text.split("\n# "):
-        idea_text = idea_text.strip()
-        if idea_text:
-            idea_title = idea_text.split("\n")[0].strip()
-            idea_content = "\n".join(idea_text.split("\n")[1:]).strip()
-            ideas_list.append({
-                "title": idea_title,
-                "content": idea_content
-            })
+    for idea_block in ideas_text.split("\n# "):
+        idea_block = idea_block.strip()
+        if not idea_block:
+            continue
+        title, *content_lines = idea_block.split("\n")
+        ideas_list.append({
+            "title": title.strip(),
+            "content": "\n".join(content_lines).strip(),
+        })
 
-    # save the ideas list to a jsonl file
-    with open("ideas.jsonl", "w") as jsonl_file:
+    with open("ideas.jsonl", "w", encoding="utf-8") as out:
         for idea in ideas_list:
-            jsonl_file.write(json.dumps(idea) + "\n")
+            out.write(json.dumps(idea) + "\n")
 
 
-def embed_text(text):
+def embed_text(text: str):
+    """Return an OpenAI embedding for *text*."""
     response = client.embeddings.create(
         input=text,
-        # model="text-embedding-3-small"
         model="text-embedding-3-large",
     )
     return response.data[0].embedding
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--skip_mdjsonl", action="store_true", help="Skip the conversion from markdown to JSONL.")
-    parser.add_argument("--skip_embeddings", action="store_true", help="Skip the embedding process.")
-    parser.add_argument("--skip_2d_embeddings", action="store_true", help="Skip the embedding process.")
-    parser.add_argument("--embedding_separate", action="store_true", help="Use the 2D embeddings with each description as a separate embedding.")
-    args = parser.parse_args()
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description="Embed ideas and create 3-D visualisations.")
 
-    skip_mdjsonl = args.skip_mdjsonl or args.skip_embeddings or args.skip_2d_embeddings
-    skip_embeddings = args.skip_embeddings or args.skip_2d_embeddings
-    skip_2d_embeddings = args.skip_2d_embeddings
+    # Pipeline toggles
+    p.add_argument("--skip_mdjsonl", action="store_true", help="Skip .md → .jsonl conversion")
+    p.add_argument("--skip_embeddings", action="store_true", help="Skip embedding generation")
+    p.add_argument("--skip_dimred", action="store_true", help="Skip dimensionality-reduction")
 
-    # Convert ideas from markdown to jsonl
+    # Embedding granularity
+    p.add_argument("--embedding_separate", action="store_true", help="Embed each sentence separately")
+
+    # Dimensionality-reduction algorithm
+    p.add_argument("--downsample_method", choices=["pca", "tsne"], default="pca", help="Dimensionality-reduction algorithm")
+    p.add_argument("--tsne_perplexity", type=float, default=30.0, help="Perplexity for t-SNE")
+    p.add_argument("--tsne_lr", type=float, default=200.0, help="Learning-rate for t-SNE")
+
+    return p
+
+
+def main():
+    args = build_parser().parse_args()
+
+    # Derive the skip flags for backward-compatibility ----------------------------------------------------------
+    skip_mdjsonl = args.skip_mdjsonl or args.skip_embeddings or args.skip_dimred
+    skip_embeddings = args.skip_embeddings or args.skip_dimred
+
+    # -----------------------------------------------------------------------------------------------------------
+    # 1. Markdown → JSONL                                                                                        
+    # -----------------------------------------------------------------------------------------------------------
     if not skip_mdjsonl:
         ideas_md_to_jsonl()
-        print("Ideas have been converted to ideas.jsonl")
+        print("✅ Converted ideas.md → ideas.jsonl")
 
-    # Load the ideas from the jsonl file
-    with open("ideas.jsonl", "r") as jsonl_file:
-        ideas = [json.loads(line) for line in jsonl_file]
-    print(f"Loaded {len(ideas)} ideas from ideas.jsonl")
+    with open("ideas.jsonl", "r", encoding="utf-8") as fh:
+        ideas = [json.loads(line) for line in fh]
+    print(f"📄 Loaded {len(ideas)} ideas")
 
-    # Embed the ideas into a vector
+    # -----------------------------------------------------------------------------------------------------------
+    # 2. Text → Embeddings                                                                                       
+    # -----------------------------------------------------------------------------------------------------------
     if not skip_embeddings:
         ideas_with_embeddings = copy.deepcopy(ideas)
         for idea in ideas_with_embeddings:
-            idea['embedding_tgt'] = embed_text(idea['title'] + '\n\n' + idea["content"])
-            idea['embeddings'] = [embed_text(xs) for xs in idea['content'].split('\n')]
-            print(f"- embedding created: {idea['title']}")
-        # save the embeddings
-        with open("ideas_embeddings.jsonl", "w") as embeddings_file:
+            idea["embedding_tgt"] = embed_text(f"{idea['title']}\n\n{idea['content']}")
+            idea["embeddings"] = [embed_text(sentence) for sentence in idea["content"].split("\n") if sentence]
+            print(f"🔗 Embedded: {idea['title']}")
+
+        with open("ideas_embeddings.jsonl", "w", encoding="utf-8") as out:
             for idea in ideas_with_embeddings:
-                embeddings_file.write(json.dumps(idea) + "\n")
-        print("Embeddings have been created and saved to ideas_embeddings.jsonl")
+                out.write(json.dumps(idea) + "\n")
+        print("✅ Saved embeddings → ideas_embeddings.jsonl")
 
+    with open("ideas_embeddings.jsonl", "r", encoding="utf-8") as fh:
+        ideas_with_embeddings = [json.loads(line) for line in fh]
+    print(f"📄 Loaded {len(ideas_with_embeddings)} ideas with embeddings")
 
-    # Load the embeddings from the jsonl file
-    with open("ideas_embeddings.jsonl", "r") as embeddings_file:
-        ideas_with_embeddings = [json.loads(line) for line in embeddings_file]
-    print(f"Loaded {len(ideas_with_embeddings)} ideas with embeddings from ideas_embeddings.jsonl")
-
-    # Downsample the embeddings to 3 dimensions
-    if not skip_2d_embeddings:
+    # -----------------------------------------------------------------------------------------------------------
+    # 3. Dimensionality-reduction (PCA or t-SNE → 3-D)                                                           
+    # -----------------------------------------------------------------------------------------------------------
+    if not args.skip_dimred:
         if not args.embedding_separate:
             embed_matrix = np.array([idea["embedding_tgt"] for idea in ideas_with_embeddings])
-            print("Shape of embed_matrix:", embed_matrix.shape)
         else:
-            embed_tmp = [idea["embeddings"] for idea in ideas_with_embeddings]
-            embed_matrix = np.array([item for sublist in embed_tmp for item in sublist])
-            print("Shape of embed_matrix:", embed_matrix.shape)
-        pca = PCA(n_components=3, svd_solver="full", random_state=42)  # Changed to 3 components
-        embed_3d = pca.fit_transform(embed_matrix)
+            nested = [idea["embeddings"] for idea in ideas_with_embeddings]
+            embed_matrix = np.array([item for sublist in nested for item in sublist])
+        print("🔢 Embed-matrix shape:", embed_matrix.shape)
 
-        # Attach 3-D coords to each idea and write out
-        out_path = "embeddings_3d.jsonl"
-        with open(out_path, "w") as fh:
-            for (x, y, z) in embed_3d:  # Added z coordinate
-                idea_with_xyz = {
-                    "x": float(x),
-                    "y": float(y),
-                    "z": float(z),  # Added z coordinate
-                }
-                fh.write(json.dumps(idea_with_xyz) + "\n")
+        if args.downsample_method == "pca":
+            reducer = PCA(n_components=3, svd_solver="full", random_state=42)
+            print("🗜️  Using PCA")
+        else:
+            reducer = TSNE(
+                n_components=3,
+                perplexity=args.tsne_perplexity,
+                learning_rate=args.tsne_lr,
+                init="random",
+                random_state=42,
+            )
+            print("🗜️  Using t-SNE")
 
-            print(f"3-D embeddings saved to {out_path}")
+        embed_3d = reducer.fit_transform(embed_matrix)
 
-    # Load the 3D embeddings from the jsonl file
-    with open("embeddings_3d.jsonl", "r") as embeddings_3d_file:
-        embeddings_3d = [json.loads(line) for line in embeddings_3d_file]
-    print(f"Loaded {len(embeddings_3d)} ideas with 3D embeddings from embeddings_3d.jsonl")
+        with open("embeddings_3d.jsonl", "w", encoding="utf-8") as fh:
+            for (x, y, z) in embed_3d:
+                fh.write(json.dumps({"x": float(x), "y": float(y), "z": float(z)}) + "\n")
+        print("✅ Saved 3-D embeddings → embeddings_3d.jsonl")
 
+    # -----------------------------------------------------------------------------------------------------------
+    # 4. Visualisation                                                                                           
+    # -----------------------------------------------------------------------------------------------------------
+    with open("embeddings_3d.jsonl", "r", encoding="utf-8") as fh:
+        embeddings_3d = [json.loads(line) for line in fh]
+    print(f"📊 Loaded {len(embeddings_3d)} 3-D points")
 
+    # -----------------------------------------------------------------------------------------------
+    # Interactive Plotly scatter with conditional labelling
+    # -----------------------------------------------------------------------------------------------
+    if not args.embedding_separate:
+        # One point per idea → we can label directly with titles
+        df = pd.DataFrame(embeddings_3d)
+        df["title"] = [idea["title"] for idea in ideas_with_embeddings]
+        fig = px.scatter_3d(
+            df,
+            x="x",
+            y="y",
+            z="z",
+            text="title",          # visible labels
+            hover_name="title",    # hover tool-tip
+            opacity=0.85,
+            color=df.index.astype(float),
+        )
+        fig.update_traces(textposition="top center", marker=dict(size=6))
+    else:
+        # Multiple points per idea → fall back to colour gradient only
+        df = pd.DataFrame(embeddings_3d)
+        fig = px.scatter_3d(
+            df,
+            x="x",
+            y="y",
+            z="z",
+            opacity=0.85,
+            color=df.index.astype(float),
+        )
+        fig.update_traces(marker=dict(size=6))
 
-    # Create a 3D scatter plot using Plotly
-    df = pd.DataFrame(embeddings_3d)
-    fig = px.scatter_3d(
-        df,
-        x="x",
-        y="y",
-        z="z",
-        color=df.index.astype(float),     # gives each point its own colour along a gradient
-        opacity=0.85,
-    )
-
-    fig.update_traces(marker=dict(size=6))
     fig.update_layout(
         title="3-D Embeddings of Ideas",
-        scene=dict(
-            xaxis_title="X",
-            yaxis_title="Y",
-            zaxis_title="Z",
-        ),
+        scene=dict(xaxis_title="X", yaxis_title="Y", zaxis_title="Z"),
+        showlegend=False,
     )
 
-    out_file = "ideas_interactive.html"
-    fig.write_html(out_file)
-    print(f"Interactive plot saved to {out_file}")
+    html_out = "ideas_interactive.html"
+    fig.write_html(html_out)
+    print(f"✅ Saved interactive plot → {html_out}")
 
-
-
-    # Create a 3D animation of the embeddings
+    # -----------------------------------------------------------------------------------------------
+    # Matplotlib animation (unchanged)
+    # -----------------------------------------------------------------------------------------------
     fig = plt.figure(figsize=(10, 10))
-    ax  = fig.add_subplot(111, projection='3d')
+    ax = fig.add_subplot(111, projection="3d")
 
-    # Create a static colour-bar that maps 0‒1 → viridis
     norm = Normalize(vmin=0, vmax=1)
-    sm   = ScalarMappable(cmap=plt.cm.viridis, norm=norm)
-    sm.set_array([])                          # no data needed
+    sm = ScalarMappable(cmap=plt.cm.viridis, norm=norm)
+    sm.set_array([])
     cbar = fig.colorbar(sm, ax=ax, fraction=0.035, pad=0.08, ticks=[])
     cbar.set_label("recency", fontsize=22)
 
     def animate(frame):
         ax.clear()
         ax.grid()
-        ax.set_title("3D Embeddings of Ideas", fontsize=30)
+        ax.set_title("3-D Embeddings of Ideas", fontsize=30)
         ax.set_xlabel("X")
         ax.set_ylabel("Y")
         ax.set_zlabel("Z")
-        
-        # Plot all points up to the current frame
+
         for i in range(frame + 1):
-            idea = embeddings_3d[i]
-            color_intensity = i / len(embeddings_3d)
-            ax.scatter(
-                idea["x"], idea["y"], idea["z"],
-                color=plt.cm.viridis(color_intensity), s=100
-            )
-            
-            # Arrow from previous to current point
+            p = embeddings_3d[i]
+            colour_idx = i / len(embeddings_3d)
+            ax.scatter(p["x"], p["y"], p["z"], color=plt.cm.viridis(colour_idx), s=100)
             if i > 0:
                 prev = embeddings_3d[i - 1]
-                ax.quiver(
-                    prev["x"], prev["y"], prev["z"],
-                    idea["x"] - prev["x"],
-                    idea["y"] - prev["y"],
-                    idea["z"] - prev["z"],
-                    color=plt.cm.viridis(color_intensity),
-                    alpha=0.5, arrow_length_ratio=0.1,
-                )
+                ax.quiver(prev["x"], prev["y"], prev["z"],
+                          p["x"] - prev["x"], p["y"] - prev["y"], p["z"] - prev["z"],
+                          color=plt.cm.viridis(colour_idx), alpha=0.5, arrow_length_ratio=0.1)
 
-        # Consistent axis limits
-        all_x = [p["x"] for p in embeddings_3d]
-        all_y = [p["y"] for p in embeddings_3d]
-        all_z = [p["z"] for p in embeddings_3d]
-        ax.set_xlim(min(all_x) - 0.1, max(all_x) + 0.1)
-        ax.set_ylim(min(all_y) - 0.1, max(all_y) + 0.1)
-        ax.set_zlim(min(all_z) - 0.1, max(all_z) + 0.1)
+        xs = [p["x"] for p in embeddings_3d]
+        ys = [p["y"] for p in embeddings_3d]
+        zs = [p["z"] for p in embeddings_3d]
+        ax.set_xlim(min(xs) - 0.1, max(xs) + 0.1)
+        ax.set_ylim(min(ys) - 0.1, max(ys) + 0.1)
+        ax.set_zlim(min(zs) - 0.1, max(zs) + 0.1)
 
-        # Slow spin for visual flair
         ax.view_init(elev=20, azim=(frame % 360) * 1.2)
 
-    # Build and save the animation
-    anim = animation.FuncAnimation(
-        fig, animate, frames=len(embeddings_3d),
-        interval=100, repeat=False
-    )
-    anim.save("ideas_evolution.mp4", writer="ffmpeg")
+    anim = animation.FuncAnimation(fig, animate, frames=len(embeddings_3d), interval=100, repeat=False)
+    video_out = "ideas_evolution.mp4"
+    anim.save(video_out, writer="ffmpeg")
     plt.close()
-    print("Animation saved to ideas_evolution.mp4")
+    print(f"✅ Saved animation → {video_out}")
+
+
+if __name__ == "__main__":
+    main()
