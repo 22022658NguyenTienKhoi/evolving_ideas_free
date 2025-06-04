@@ -28,5 +28,5 @@ pip install -r requirements.txt
 export OPENAI_API_KEY="sk-…"
 
 # Run
-python ideas_evolution.py
+python main.py
 ```
