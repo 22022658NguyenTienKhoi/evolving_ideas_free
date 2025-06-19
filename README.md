@@ -26,7 +26,8 @@ pip install -r requirements.txt
 
 # Set API key
 export OPENAI_API_KEY="sk-…"
-
+or
+export GOOGLE_API_KEY='...'
 # Run
 python main.py
 ```

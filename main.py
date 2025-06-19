@@ -21,7 +21,7 @@ import google.generativeai as genai
 # --- MODIFIED: Initialize clients for both providers ---
 # The script will use the appropriate client based on the chosen model.
 # Make sure OPENAI_API_KEY and GOOGLE_API_KEY are set as environment variables.
-openai_client = OpenAI()
+#openai_client = OpenAI()
 
 # Configure the Google client
 try:
@@ -104,7 +104,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--embedding_model",
         choices=["openai/text-embedding-3-large", "google/text-embedding-004"],
-        default="openai/text-embedding-3-large",
+        default="google/text-embedding-004",
         help="The embedding model to use, specified as 'provider/model_name'."
     )
 
@@ -283,7 +283,7 @@ def main():
         ax.view_init(elev=20, azim=(frame % 360) * 1.2)
 
     anim = animation.FuncAnimation(fig, animate, frames=len(embeddings_3d), interval=100, repeat=False)
-    video_out = "ideas_evolution.mp4"
+    video_out = "ideas_evolution.gif"
     anim.save(video_out, writer="ffmpeg")
     plt.close()
     print(f"✅ Saved animation → {video_out}")
