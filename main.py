@@ -14,7 +14,23 @@ from openai import OpenAI
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 
-client = OpenAI()
+# --- NEW: Import Google's AI client ---
+import google.generativeai as genai
+
+
+# --- MODIFIED: Initialize clients for both providers ---
+# The script will use the appropriate client based on the chosen model.
+# Make sure OPENAI_API_KEY and GOOGLE_API_KEY are set as environment variables.
+openai_client = OpenAI()
+
+# Configure the Google client
+try:
+    genai.configure(api_key=os.environ["GOOGLE_API_KEY"])
+except KeyError:
+    print("⚠️ WARNING: GOOGLE_API_KEY environment variable not set. Google models will not be available.")
+except Exception as e:
+    print(f"⚠️ WARNING: Could not configure Google AI client: {e}")
+
 
 def ideas_md_to_jsonl():
     """Convert ideas.md into ideas.jsonl with one idea per line."""
@@ -37,13 +53,43 @@ def ideas_md_to_jsonl():
             out.write(json.dumps(idea) + "\n")
 
 
-def embed_text(text: str):
-    """Return an OpenAI embedding for *text*."""
-    response = client.embeddings.create(
+# --- NEW: Provider-specific embedding functions ---
+def _embed_openai(text: str, model: str):
+    """Return an OpenAI embedding for *text* using a specific *model*."""
+    response = openai_client.embeddings.create(
         input=text,
-        model="text-embedding-3-large",
+        model=model,
     )
     return response.data[0].embedding
+
+def _embed_google(text: str, model: str):
+    """Return a Google embedding for *text* using a specific *model*."""
+    # Google's API expects the model name with a "models/" prefix
+    google_model_name = f"models/{model}"
+    result = genai.embed_content(
+        model=google_model_name,
+        content=text,
+        task_type="RETRIEVAL_DOCUMENT", # Or "SEMANTIC_SIMILARITY", etc.
+    )
+    return result['embedding']
+
+
+# --- MODIFIED: embed_text now acts as a dispatcher ---
+def embed_text(text: str, model_name: str):
+    """
+    Return an embedding for *text* using the specified *model_name*.
+    This function dispatches to the correct provider's API.
+    """
+    if model_name.startswith("openai/"):
+        # e.g., "openai/text-embedding-3-large" -> "text-embedding-3-large"
+        specific_model = model_name.split("/", 1)[1]
+        return _embed_openai(text, model=specific_model)
+    elif model_name.startswith("google/"):
+        # e.g., "google/text-embedding-004" -> "text-embedding-004"
+        specific_model = model_name.split("/", 1)[1]
+        return _embed_google(text, model=specific_model)
+    else:
+        raise ValueError(f"Unsupported embedding model provider: {model_name}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -53,6 +99,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--skip_mdjsonl", action="store_true", help="Skip .md → .jsonl conversion")
     p.add_argument("--skip_embeddings", action="store_true", help="Skip embedding generation")
     p.add_argument("--skip_dimred", action="store_true", help="Skip dimensionality-reduction")
+
+    # --- NEW: Embedding model selection ---
+    p.add_argument(
+        "--embedding_model",
+        choices=["openai/text-embedding-3-large", "google/text-embedding-004"],
+        default="openai/text-embedding-3-large",
+        help="The embedding model to use, specified as 'provider/model_name'."
+    )
 
     # Embedding granularity
     p.add_argument("--embedding_separate", action="store_true", help="Embed each sentence separately")
@@ -73,7 +127,7 @@ def main():
     skip_embeddings = args.skip_embeddings or args.skip_dimred
 
     # -----------------------------------------------------------------------------------------------------------
-    # 1. Markdown → JSONL                                                                                        
+    # 1. Markdown → JSONL
     # -----------------------------------------------------------------------------------------------------------
     if not skip_mdjsonl:
         ideas_md_to_jsonl()
@@ -84,13 +138,21 @@ def main():
     print(f"📄 Loaded {len(ideas)} ideas")
 
     # -----------------------------------------------------------------------------------------------------------
-    # 2. Text → Embeddings                                                                                       
+    # 2. Text → Embeddings
     # -----------------------------------------------------------------------------------------------------------
     if not skip_embeddings:
+        print(f"⚡️ Generating embeddings using model: {args.embedding_model}")
         ideas_with_embeddings = copy.deepcopy(ideas)
         for idea in ideas_with_embeddings:
-            idea["embedding_tgt"] = embed_text(f"{idea['title']}\n\n{idea['content']}")
-            idea["embeddings"] = [embed_text(sentence) for sentence in idea["content"].split("\n") if sentence]
+            # --- MODIFIED: Pass the model name to the embedding function ---
+            idea["embedding_tgt"] = embed_text(
+                f"{idea['title']}\n\n{idea['content']}",
+                model_name=args.embedding_model
+            )
+            idea["embeddings"] = [
+                embed_text(sentence, model_name=args.embedding_model)
+                for sentence in idea["content"].split("\n") if sentence
+            ]
             print(f"🔗 Embedded: {idea['title']}")
 
         with open("ideas_embeddings.jsonl", "w", encoding="utf-8") as out:
@@ -103,7 +165,7 @@ def main():
     print(f"📄 Loaded {len(ideas_with_embeddings)} ideas with embeddings")
 
     # -----------------------------------------------------------------------------------------------------------
-    # 3. Dimensionality-reduction (PCA or t-SNE → 3-D)                                                           
+    # 3. Dimensionality-reduction (PCA or t-SNE → 3-D)
     # -----------------------------------------------------------------------------------------------------------
     if not args.skip_dimred:
         if not args.embedding_separate:
@@ -134,7 +196,7 @@ def main():
         print("✅ Saved 3-D embeddings → embeddings_3d.jsonl")
 
     # -----------------------------------------------------------------------------------------------------------
-    # 4. Visualisation                                                                                           
+    # 4. Visualisation (No changes needed here)
     # -----------------------------------------------------------------------------------------------------------
     with open("embeddings_3d.jsonl", "r", encoding="utf-8") as fh:
         embeddings_3d = [json.loads(line) for line in fh]
